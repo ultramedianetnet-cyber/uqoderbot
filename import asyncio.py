@@ -257,7 +257,7 @@ async def ai_handler(message: types.Message):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": message.text}
             ],
-            model="llama-3.3-70b-versatile",
+            model="llama-3.3-70b-specdec",
             temperature=0.2
         )
         await status.delete()
