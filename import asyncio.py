@@ -3,12 +3,12 @@ import os
 import sqlite3
 import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup, default_state
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 from groq import Groq
@@ -117,8 +117,14 @@ def get_sub_keyboard(unsubscribed_list):
 SYSTEM_PROMPT = """Siz UQoder platformasining rasmiy AI Dasturchisisiz. 
 Toza, xatosiz va tayyor ishlaydigan kodlarni Markdown formatida taqdim etasiz."""
 
+@dp.message(Command("cancel"))
+async def cancel_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Barcha amallar bekor qilindi. Oddiy rejimga qaytdingiz.")
+
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message):
+async def start_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     add_user(message.from_user.id)
     unsub = await check_subscriptions(message.from_user.id)
     
@@ -149,13 +155,13 @@ def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📢 Reklama yuborish", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin_add_channel"),
-         InlineKeyboardButton(text="➖ Kanal o'chirish", callback_data="admin_del_channel")],
+        [InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin_add_channel")],
         [InlineKeyboardButton(text="👤 Admin qo'shish", callback_data="admin_add_admin")]
     ])
 
 @dp.message(Command("admin"))
-async def admin_cmd(message: types.Message):
+async def admin_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     if not is_admin(message.from_user.id):
         return
     await message.answer("🔑 *Admin Panelga xush kelibsiz:*", reply_markup=admin_keyboard())
@@ -178,28 +184,32 @@ async def add_channel_start(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer(
         "📌 *Kanal ID va havolasini quyidagi ko'rinishda yuboring:*\n\n"
         "`-1001234567890 https://t.me/kanal_nomi`\n\n"
-        "⚠️ *Eslatma:* Botni o'sha kanalda ADMIN qilishingiz shart!"
+        "Bekor qilish uchun /cancel bosing.\n"
+        "⚠️️ *Eslatma:* Botni o'sha kanalda ADMIN qilishingiz shart!"
     )
 
 @dp.message(AdminStates.waiting_for_channel)
 async def process_add_channel(message: types.Message, state: FSMContext):
     try:
-        ch_id, link = message.text.split()
+        parts = message.text.split()
+        if len(parts) != 2:
+            raise ValueError("Incorrect format")
+        ch_id, link = parts[0], parts[1]
         conn = sqlite3.connect("bot_database.db")
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO channels (channel_id, invite_link) VALUES (?, ?)", (ch_id, link))
         conn.commit()
         conn.close()
         await message.answer("✅ Kanal muvaffaqiyatli qo'shildi!")
-    except Exception as e:
-        await message.answer("❌ Xatolik! Formatyga e'tibor bering: `-1001234567890 https://t.me/link`")
-    await state.clear()
+        await state.clear()
+    except Exception:
+        await message.answer("❌ Xatolik! Formatga e'tibor bering: `-1001234567890 https://t.me/link`\nBekor qilish uchun /cancel bosing.")
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return
     await state.set_state(AdminStates.waiting_for_broadcast)
-    await call.message.answer("📢 Tarqatiladigan xabarni (Matn, Rasm yoki Video) yuboring:")
+    await call.message.answer("📢 Tarqatiladigan xabarni yuboring (Bekor qilish: /cancel):")
 
 @dp.message(AdminStates.waiting_for_broadcast)
 async def process_broadcast(message: types.Message, state: FSMContext):
@@ -220,7 +230,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
 async def add_admin_start(call: types.CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id): return
     await state.set_state(AdminStates.waiting_for_new_admin)
-    await call.message.answer("👤 Yangi adminning Telegram ID'sini yuboring:")
+    await call.message.answer("👤 Yangi adminning Telegram ID'sini yuboring (Bekor qilish: /cancel):")
 
 @dp.message(AdminStates.waiting_for_new_admin)
 async def process_add_admin(message: types.Message, state: FSMContext):
@@ -232,16 +242,15 @@ async def process_add_admin(message: types.Message, state: FSMContext):
         conn.commit()
         conn.close()
         await message.answer(f"✅ `{new_id}` muvaffaqiyatli admin qilindi!")
+        await state.clear()
     except Exception:
-        await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak.")
-    await state.clear()
+        await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak. Bekor qilish uchun /cancel bosing.")
 
 # ==================== AI CHAT HANDLER ====================
-@dp.message(F.text)
+@dp.message(StateFilter(default_state), F.text)
 async def ai_handler(message: types.Message):
     add_user(message.from_user.id)
     
-    # Har bir xabarda obunani tekshirish
     unsub = await check_subscriptions(message.from_user.id)
     if unsub:
         await message.answer(
